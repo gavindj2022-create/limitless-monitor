@@ -1,0 +1,20 @@
+"$schema" = "./node_modules/wrangler/config-schema.json"
+name = "limitless-monitor"
+main = "src/index.js"
+workers_dev = true
+compatibility_date = "2026-06-25"
+compatibility_flags = ["nodejs_compat"]
+upload_source_maps = true
+
+[triggers]
+crons = ["0 13 * * *"]
+
+[vars]
+DAILY_DIGEST_TIME_LABEL = "8:00 AM Central"
+SLOW_MS = "2500"
+SCREENSHOT_ON_WARN_ONLY = "true"
+KNOWN_SITE_CONFIG_JSON = "[]"
+
+[browser]
+binding = "BROWSER"
+remote = true
