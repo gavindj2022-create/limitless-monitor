@@ -131,12 +131,106 @@ describe("Cloudflare Pages discovery", () => {
     ]);
   });
 
+  it("paginates across Cloudflare Pages domain pages", async () => {
+    const domainPages = [];
+    const fetcher = async (url) => {
+      const parsed = new URL(url);
+
+      if (parsed.pathname === "/client/v4/accounts/acct-123/pages/projects") {
+        return jsonResponse({
+          success: true,
+          result: [
+            {
+              name: "project-with-domains",
+              subdomain: "project-with-domains.pages.dev",
+              production_branch: "main",
+            },
+          ],
+        });
+      }
+
+      if (parsed.pathname === "/client/v4/accounts/acct-123/pages/projects/project-with-domains/domains") {
+        const page = parsed.searchParams.get("page");
+        domainPages.push(page);
+        return jsonResponse({
+          success: true,
+          result_info: { page: Number(page), total_pages: 2 },
+          result: [{ name: `domain-${page}.example.com`, status: "active" }],
+        });
+      }
+
+      throw new Error(`Unexpected URL ${url}`);
+    };
+
+    const sites = await discoverSites({
+      accountId: "acct-123",
+      apiToken: "token-abc",
+      fetcher,
+    });
+
+    expect(domainPages).toEqual(["1", "2"]);
+    expect(sites[0].url).toBe("https://domain-1.example.com");
+    expect(sites[0].config.domains).toEqual([
+      "domain-1.example.com",
+      "domain-2.example.com",
+    ]);
+  });
+
+  it("uses the configured preferred active custom domain when multiple active domains are returned", async () => {
+    const fetcher = async (url) => {
+      const parsed = new URL(url);
+
+      if (parsed.pathname === "/client/v4/accounts/acct-123/pages/projects") {
+        return jsonResponse({
+          success: true,
+          result: [
+            {
+              name: "brand-site",
+              subdomain: "brand-site.pages.dev",
+              production_branch: "main",
+            },
+          ],
+        });
+      }
+
+      if (parsed.pathname === "/client/v4/accounts/acct-123/pages/projects/brand-site/domains") {
+        return jsonResponse({
+          success: true,
+          result: [
+            { name: "first.example.com", status: "active" },
+            { name: "brand.example.com", status: "active" },
+          ],
+        });
+      }
+
+      throw new Error(`Unexpected URL ${url}`);
+    };
+
+    const sites = await discoverSites({
+      accountId: "acct-123",
+      apiToken: "token-abc",
+      fetcher,
+      configuredSites: [
+        {
+          projectName: "brand-site",
+          preferredDomain: "brand.example.com",
+        },
+      ],
+    });
+
+    expect(sites[0].url).toBe("https://brand.example.com");
+    expect(sites[0].config.domains).toEqual([
+      "first.example.com",
+      "brand.example.com",
+    ]);
+  });
+
   it("includes external configured public sites with configured source", () => {
     const sites = mergeConfiguredSites([], [
       {
         slug: "external-site",
         displayName: "External Site",
-        url: "https://external.example.com/",
+        url: "external.example.com",
         marker: "Welcome",
         form: { selector: "form" },
         paused: false,

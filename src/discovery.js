@@ -19,6 +19,10 @@ function publicUrl(value) {
   return normalizeUrl(prefixed);
 }
 
+function hostname(value) {
+  return new URL(publicUrl(value)).hostname;
+}
+
 function projectDisplayName(projectName) {
   return String(projectName || "")
     .split(/[-_\s]+/)
@@ -72,11 +76,22 @@ function siteConfig(site, config = {}) {
   };
 }
 
+function preferredDomainUrl(site, config) {
+  if (!config.preferredDomain) {
+    return undefined;
+  }
+  const preferredHost = hostname(config.preferredDomain);
+  const matchingDomain = (site.config?.domains || []).find(
+    (domain) => hostname(domain) === preferredHost
+  );
+  return matchingDomain ? publicUrl(matchingDomain) : undefined;
+}
+
 function applyConfig(site, config = {}) {
   return {
     slug: config.slug || site.slug,
     displayName: config.displayName || site.displayName,
-    url: config.url ? normalizeUrl(config.url) : site.url,
+    url: config.url ? publicUrl(config.url) : preferredDomainUrl(site, config) || site.url,
     projectName: site.projectName || config.projectName,
     source: site.source,
     config: siteConfig(site, config),
@@ -125,15 +140,28 @@ export function mergeConfiguredSites(projectSites, configuredSites = []) {
 
 async function discoverProjectDomains({ accountId, apiToken, fetcher, projectName }) {
   const encodedProjectName = encodeURIComponent(projectName);
-  const body = await fetchCloudflare(
-    fetcher,
-    `/accounts/${accountId}/pages/projects/${encodedProjectName}/domains`,
-    apiToken
-  );
+  const domains = [];
+  let page = 1;
+  let totalPages = 1;
 
-  return (body.result || [])
-    .filter((domain) => domain.status === "active" && domain.name)
-    .map((domain) => domain.name);
+  do {
+    const body = await fetchCloudflare(
+      fetcher,
+      `/accounts/${accountId}/pages/projects/${encodedProjectName}/domains`,
+      apiToken,
+      { page, per_page: 50 }
+    );
+
+    domains.push(
+      ...(body.result || [])
+        .filter((domain) => domain.status === "active" && domain.name)
+        .map((domain) => domain.name)
+    );
+    totalPages = body.result_info?.total_pages || 1;
+    page += 1;
+  } while (page <= totalPages);
+
+  return domains;
 }
 
 function projectSite(project, domains) {
