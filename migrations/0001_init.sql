@@ -33,7 +33,7 @@ CREATE TABLE IF NOT EXISTS site_findings (
   detail TEXT NOT NULL,
   emoji TEXT NOT NULL,
   created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  FOREIGN KEY(site_slug) REFERENCES sites(slug)
+  FOREIGN KEY(site_slug, review_date) REFERENCES daily_reviews(site_slug, review_date)
 );
 
 CREATE INDEX IF NOT EXISTS idx_daily_reviews_date ON daily_reviews(review_date);

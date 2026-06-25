@@ -40,8 +40,7 @@ export async function recordDailyReview(db, review) {
         status = excluded.status,
         summary = excluded.summary,
         metrics_json = excluded.metrics_json,
-        screenshots_json = excluded.screenshots_json,
-        created_at = CURRENT_TIMESTAMP`
+        screenshots_json = excluded.screenshots_json`
     )
     .bind(
       review.siteSlug,
@@ -51,6 +50,10 @@ export async function recordDailyReview(db, review) {
       JSON.stringify(review.metrics || {}),
       JSON.stringify(review.screenshots || {})
     );
+
+  const deleteFindingsStatement = db
+    .prepare("DELETE FROM site_findings WHERE site_slug = ? AND review_date = ?")
+    .bind(review.siteSlug, review.reviewDate);
 
   const findingStatements = (review.findings || []).map((item) =>
     db
@@ -70,5 +73,5 @@ export async function recordDailyReview(db, review) {
       )
   );
 
-  await db.batch([reviewStatement, ...findingStatements]);
+  await db.batch([reviewStatement, deleteFindingsStatement, ...findingStatements]);
 }

@@ -43,6 +43,13 @@ function createFakeDb() {
           if (sql.startsWith("INSERT INTO site_findings")) {
             store.findings.push(this.values);
           }
+          if (sql.startsWith("DELETE FROM site_findings")) {
+            const [siteSlug, reviewDate] = this.values;
+            store.findings = store.findings.filter(
+              ([storedSiteSlug, storedReviewDate]) =>
+                storedSiteSlug !== siteSlug || storedReviewDate !== reviewDate
+            );
+          }
           return { success: true };
         },
         async all() {
@@ -100,5 +107,33 @@ describe("state", () => {
 
     expect(db.store.reviews).toHaveLength(1);
     expect(db.store.findings).toHaveLength(1);
+  });
+
+  it("replaces findings when recording the same daily review again", async () => {
+    const db = createFakeDb();
+    await recordDailyReview(db, {
+      siteSlug: "je-ward",
+      reviewDate: "2026-06-24",
+      status: "review",
+      summary: "Needs mobile polish",
+      findings: [
+        { severity: "warn", area: "mobile", title: "CTA wraps", detail: "CTA wraps tightly", emoji: "phone" },
+        { severity: "info", area: "copy", title: "Headline works", detail: "Headline is clear", emoji: "note" },
+      ],
+    });
+
+    await recordDailyReview(db, {
+      siteSlug: "je-ward",
+      reviewDate: "2026-06-24",
+      status: "pass",
+      summary: "Mobile polish fixed",
+      findings: [
+        { severity: "info", area: "mobile", title: "CTA fixed", detail: "CTA no longer wraps", emoji: "check" },
+      ],
+    });
+
+    expect(db.store.findings).toEqual([
+      ["je-ward", "2026-06-24", "info", "mobile", "CTA fixed", "CTA no longer wraps", "check"],
+    ]);
   });
 });
