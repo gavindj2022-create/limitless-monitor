@@ -3,6 +3,7 @@ import { finding } from "./model.js";
 const DEFAULT_SLOW_MS = 2500;
 const BLANK_TEXT_LENGTH = 20;
 const LARGE_IMAGE_BYTES = 2_000_000;
+const MAX_IMAGE_PROBES = 20;
 
 export async function runCoreChecks(site, options = {}) {
   const fetcher = options.fetcher || fetch;
@@ -127,19 +128,40 @@ function addSeoFindings(html, findings) {
     );
   }
 
-  if (!/<meta\b[^>]*name=["']description["'][^>]*content=["'][^"']+["'][^>]*>/i.test(html)) {
+  if (
+    !hasTag(
+      html,
+      "meta",
+      (tag) => readAttribute(tag, "name").toLowerCase() === "description"
+        && Boolean(readAttribute(tag, "content").trim()),
+    )
+  ) {
     findings.push(
       finding("warn", "seo", "Meta description missing", "No meta description was found.", "🔎"),
     );
   }
 
-  if (!/<link\b[^>]*rel=["'][^"']*\bcanonical\b[^"']*["'][^>]*href=["'][^"']+["'][^>]*>/i.test(html)) {
+  if (
+    !hasTag(
+      html,
+      "link",
+      (tag) => readAttribute(tag, "rel").toLowerCase().split(/\s+/).includes("canonical")
+        && Boolean(readAttribute(tag, "href").trim()),
+    )
+  ) {
     findings.push(
       finding("warn", "seo", "Canonical link missing", "No canonical link was found.", "🔎"),
     );
   }
 
-  if (!/<meta\b[^>]*property=["']og:image["'][^>]*content=["'][^"']+["'][^>]*>/i.test(html)) {
+  if (
+    !hasTag(
+      html,
+      "meta",
+      (tag) => readAttribute(tag, "property").toLowerCase() === "og:image"
+        && Boolean(readAttribute(tag, "content").trim()),
+    )
+  ) {
     findings.push(
       finding("warn", "seo", "Open Graph image missing", "No og:image meta tag was found.", "🔎"),
     );
@@ -175,8 +197,12 @@ function parseImages(html, baseUrl) {
 }
 
 async function probeImages(images, fetcher, findings) {
+  const imagesToProbe = firstUniqueImages(images, MAX_IMAGE_PROBES);
+  const reportedMissingAlt = new Set();
+
   for (const image of images) {
-    if (!image.alt?.trim()) {
+    if (!image.alt?.trim() && !reportedMissingAlt.has(image.url)) {
+      reportedMissingAlt.add(image.url);
       findings.push(
         finding(
           "warn",
@@ -188,30 +214,22 @@ async function probeImages(images, fetcher, findings) {
       );
     }
 
-    let response;
-    try {
-      response = await fetcher(image.url, { method: "HEAD", redirect: "follow" });
-    } catch (error) {
-      findings.push(
-        finding(
-          "warn",
-          "images",
-          "Image failed to load",
-          `${image.url}: ${error instanceof Error ? error.message : String(error)}`,
-          "🖼️",
-        ),
-      );
-      continue;
-    }
+  }
 
+  for (const image of imagesToProbe) {
+    const response = await fetchImageWithFallback(image.url, fetcher);
     if (!response.ok) {
       findings.push(
-        finding("warn", "images", "Image failed to load", `${image.url}: HTTP ${response.status}`, "🖼️"),
+        finding("warn", "images", "Image failed to load", `${image.url}: ${response.error || `HTTP ${response.status}`}`, "🖼️"),
       );
       continue;
     }
 
-    const contentLength = Number(getHeader(response.headers, "content-length") || 0);
+    const contentLength = Number(
+      getHeader(response.response.headers, "content-length")
+        || getHeader(response.fallbackHeaders, "content-length")
+        || 0,
+    );
     if (contentLength > LARGE_IMAGE_BYTES) {
       findings.push(
         finding(
@@ -224,6 +242,54 @@ async function probeImages(images, fetcher, findings) {
       );
     }
   }
+}
+
+async function fetchImageWithFallback(url, fetcher) {
+  let headResponse;
+
+  try {
+    headResponse = await fetcher(url, { method: "HEAD", redirect: "follow" });
+    if (headResponse.ok) {
+      return { ok: true, response: headResponse };
+    }
+  } catch {
+    // Some hosts block HEAD even when the image is available via GET.
+  }
+
+  try {
+    const getResponse = await fetcher(url, { method: "GET", redirect: "follow" });
+    if (getResponse.ok) {
+      return { ok: true, response: getResponse, fallbackHeaders: headResponse?.headers };
+    }
+
+    return { ok: false, status: getResponse.status };
+  } catch (error) {
+    return {
+      ok: false,
+      status: headResponse?.status,
+      error: error instanceof Error ? error.message : String(error),
+    };
+  }
+}
+
+function firstUniqueImages(images, limit) {
+  const uniqueImages = [];
+  const seen = new Set();
+
+  for (const image of images) {
+    if (seen.has(image.url)) {
+      continue;
+    }
+
+    seen.add(image.url);
+    uniqueImages.push(image);
+
+    if (uniqueImages.length >= limit) {
+      break;
+    }
+  }
+
+  return uniqueImages;
 }
 
 async function probeFormEndpoint(site, fetcher, findings) {
@@ -263,11 +329,28 @@ async function probeFormEndpoint(site, fetcher, findings) {
 }
 
 function readAttribute(tag, name) {
-  return firstMatch(tag, new RegExp(`\\b${name}\\s*=\\s*["']([^"']*)["']`, "i"));
+  return firstMatch(
+    tag,
+    new RegExp("\\b" + name + "\\s*=\\s*(?:\"([^\"]*)\"|'([^']*)'|([^\\s\"'=<>`]+))", "i"),
+  );
 }
 
 function firstMatch(value, pattern) {
-  return value.match(pattern)?.[1] || "";
+  const match = value.match(pattern);
+  return match?.slice(1).find((group) => group !== undefined) || "";
+}
+
+function hasTag(html, tagName, predicate) {
+  const pattern = new RegExp(`<${tagName}\\b[^>]*>`, "gi");
+  let match;
+
+  while ((match = pattern.exec(html)) !== null) {
+    if (predicate(match[0])) {
+      return true;
+    }
+  }
+
+  return false;
 }
 
 function getHeader(headers, name) {

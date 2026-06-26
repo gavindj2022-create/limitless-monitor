@@ -221,4 +221,268 @@ describe("core website maintenance checks", () => {
       "HEAD",
     ]);
   });
+
+  it("accepts SEO metadata attributes in any order", async () => {
+    const fetcher = async (url, options = {}) => {
+      if (url === "https://example.com") {
+        return htmlResponse(`
+          <html>
+            <head>
+              <title>Example Marketing Site</title>
+              <meta content="A useful description for search results." name="description">
+              <link href="https://example.com" rel="canonical">
+              <meta content="https://example.com/social.png" property="og:image">
+            </head>
+            <body>
+              <p>This page has enough useful visible content for the check.</p>
+              <img src=/hero.jpg alt=Hero>
+            </body>
+          </html>
+        `);
+      }
+
+      if (url === "https://example.com/hero.jpg") {
+        expect(options.method).toBe("HEAD");
+        return assetResponse();
+      }
+
+      throw new Error(`Unexpected URL ${url}`);
+    };
+
+    const { findings, metrics } = await runCoreChecks(
+      { url: "https://example.com" },
+      { fetcher, nowMs: nowSequence(0, 100) },
+    );
+
+    expect(metrics.imageCount).toBe(1);
+    expect(findings.map((item) => item.title)).not.toContain("Meta description missing");
+    expect(findings.map((item) => item.title)).not.toContain("Canonical link missing");
+    expect(findings.map((item) => item.title)).not.toContain("Open Graph image missing");
+    expect(findings).toEqual([]);
+  });
+
+  it("falls back to GET when an image HEAD request fails or returns non-ok", async () => {
+    const calls = [];
+    const fetcher = async (url, options = {}) => {
+      calls.push({ url: String(url), method: options.method });
+
+      if (url === "https://example.com") {
+        return htmlResponse(`
+          <html>
+            <head>
+              <title>Example Marketing Site</title>
+              <meta name="description" content="A useful description for search results.">
+              <link rel="canonical" href="https://example.com">
+              <meta property="og:image" content="https://example.com/social.png">
+            </head>
+            <body>
+              <p>This page has enough useful visible content for the check.</p>
+              <img src="/head-throws.jpg" alt="First image">
+              <img src="/head-404.jpg" alt="Second image">
+            </body>
+          </html>
+        `);
+      }
+
+      if (url === "https://example.com/head-throws.jpg" && options.method === "HEAD") {
+        throw new Error("HEAD unavailable");
+      }
+
+      if (url === "https://example.com/head-throws.jpg" && options.method === "GET") {
+        return assetResponse({ headers: { "content-length": "120000" } });
+      }
+
+      if (url === "https://example.com/head-404.jpg" && options.method === "HEAD") {
+        return assetResponse({ ok: false, status: 405 });
+      }
+
+      if (url === "https://example.com/head-404.jpg" && options.method === "GET") {
+        return assetResponse({ headers: { "content-length": "130000" } });
+      }
+
+      throw new Error(`Unexpected URL ${url}`);
+    };
+
+    const { findings } = await runCoreChecks(
+      { url: "https://example.com" },
+      { fetcher, nowMs: nowSequence(0, 100) },
+    );
+
+    expect(findings).toEqual([]);
+    expect(calls.map((call) => [call.url, call.method])).toEqual([
+      ["https://example.com", undefined],
+      ["https://example.com/head-throws.jpg", "HEAD"],
+      ["https://example.com/head-throws.jpg", "GET"],
+      ["https://example.com/head-404.jpg", "HEAD"],
+      ["https://example.com/head-404.jpg", "GET"],
+    ]);
+  });
+
+  it("deduplicates image probes and caps them at the first 20 unique image URLs", async () => {
+    const imageTags = [
+      '<img src="/asset-01.jpg" alt="Duplicate">',
+      ...Array.from(
+        { length: 25 },
+        (_, index) => `<img src="/asset-${String(index + 1).padStart(2, "0")}.jpg" alt="Image ${index + 1}">`,
+      ),
+    ].join("\n");
+    const calls = [];
+    const fetcher = async (url, options = {}) => {
+      calls.push({ url: String(url), method: options.method });
+
+      if (url === "https://example.com") {
+        return htmlResponse(`
+          <html>
+            <head>
+              <title>Example Marketing Site</title>
+              <meta name="description" content="A useful description for search results.">
+              <link rel="canonical" href="https://example.com">
+              <meta property="og:image" content="https://example.com/social.png">
+            </head>
+            <body>
+              <p>This page has enough useful visible content for the check.</p>
+              ${imageTags}
+            </body>
+          </html>
+        `);
+      }
+
+      if (url.startsWith("https://example.com/asset-")) {
+        expect(options.method).toBe("HEAD");
+        return assetResponse();
+      }
+
+      throw new Error(`Unexpected URL ${url}`);
+    };
+
+    const { metrics } = await runCoreChecks(
+      { url: "https://example.com" },
+      { fetcher, nowMs: nowSequence(0, 100) },
+    );
+    const imageProbeCalls = calls.filter((call) => call.method === "HEAD");
+
+    expect(metrics.imageCount).toBe(26);
+    expect(imageProbeCalls).toHaveLength(20);
+    expect(new Set(imageProbeCalls.map((call) => call.url)).size).toBe(20);
+    expect(imageProbeCalls.map((call) => call.url)).toContain("https://example.com/asset-20.jpg");
+    expect(imageProbeCalls.map((call) => call.url)).not.toContain("https://example.com/asset-21.jpg");
+  });
+
+  it("flags HTTPS to HTTP redirects", async () => {
+    const fetcher = async () => htmlResponse(`
+      <html>
+        <head>
+          <title>Example Marketing Site</title>
+          <meta name="description" content="A useful description for search results.">
+          <link rel="canonical" href="https://example.com">
+          <meta property="og:image" content="https://example.com/social.png">
+        </head>
+        <body><p>This page has enough useful visible content for the check.</p></body>
+      </html>
+    `, { url: "http://example.com" });
+
+    const { findings } = await runCoreChecks(
+      { url: "https://example.com" },
+      { fetcher, nowMs: nowSequence(0, 100) },
+    );
+
+    expect(findings).toContainEqual(
+      expect.objectContaining({
+        severity: "error",
+        area: "security",
+        title: "HTTPS redirected to HTTP",
+      }),
+    );
+  });
+
+  it("flags slow responses", async () => {
+    const fetcher = async () => htmlResponse(`
+      <html>
+        <head>
+          <title>Example Marketing Site</title>
+          <meta name="description" content="A useful description for search results.">
+          <link rel="canonical" href="https://example.com">
+          <meta property="og:image" content="https://example.com/social.png">
+        </head>
+        <body><p>This page has enough useful visible content for the check.</p></body>
+      </html>
+    `);
+
+    const { findings } = await runCoreChecks(
+      { url: "https://example.com" },
+      { fetcher, nowMs: nowSequence(0, 2501) },
+    );
+
+    expect(findings).toContainEqual(
+      expect.objectContaining({
+        severity: "warn",
+        area: "performance",
+        title: "Slow response",
+      }),
+    );
+  });
+
+  it("flags large image assets", async () => {
+    const fetcher = async (url, options = {}) => {
+      if (url === "https://example.com") {
+        return htmlResponse(`
+          <html>
+            <head>
+              <title>Example Marketing Site</title>
+              <meta name="description" content="A useful description for search results.">
+              <link rel="canonical" href="https://example.com">
+              <meta property="og:image" content="https://example.com/social.png">
+            </head>
+            <body>
+              <p>This page has enough useful visible content for the check.</p>
+              <img src="/hero.jpg" alt="Hero">
+            </body>
+          </html>
+        `);
+      }
+
+      if (url === "https://example.com/hero.jpg") {
+        if (options.method === "HEAD") {
+          return assetResponse({ ok: false, status: 405, headers: { "content-length": "2000001" } });
+        }
+
+        expect(options.method).toBe("GET");
+        return assetResponse();
+      }
+
+      throw new Error(`Unexpected URL ${url}`);
+    };
+
+    const { findings } = await runCoreChecks(
+      { url: "https://example.com" },
+      { fetcher, nowMs: nowSequence(0, 100) },
+    );
+
+    expect(findings).toContainEqual(
+      expect.objectContaining({
+        severity: "warn",
+        area: "images",
+        title: "Large image asset",
+      }),
+    );
+  });
+
+  it("returns Site did not load when fetching the site throws", async () => {
+    const fetcher = async () => {
+      throw new Error("network down");
+    };
+
+    const { findings } = await runCoreChecks(
+      { url: "https://example.com" },
+      { fetcher, nowMs: nowSequence(0, 50) },
+    );
+
+    expect(findings).toContainEqual(
+      expect.objectContaining({
+        severity: "error",
+        area: "core",
+        title: "Site did not load",
+      }),
+    );
+  });
 });
