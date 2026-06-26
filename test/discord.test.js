@@ -53,6 +53,20 @@ describe("Discord webhook posting", () => {
     expect(sleeps).toEqual([250]);
   });
 
+  it("throws instead of retrying forever when the retry also gets rate limited", async () => {
+    const calls = [];
+    const fetcher = async () => {
+      calls.push("post");
+      return response({ ok: false, status: 429, body: JSON.stringify({ retry_after: 0.1 }) });
+    };
+    const sleep = async () => {};
+
+    await expect(postDiscordWebhook("https://discord.test/webhook", { embeds: [] }, { fetcher, sleep }))
+      .rejects.toThrow(/Discord webhook failed with HTTP 429/);
+
+    expect(calls).toHaveLength(2);
+  });
+
   it("throws a useful error with HTTP status and short response text on non-ok response", async () => {
     const fetcher = async () => response({
       ok: false,

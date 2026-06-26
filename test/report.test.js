@@ -26,6 +26,23 @@ function digest(reviews) {
   }).embeds[0];
 }
 
+function payload(reviews) {
+  return buildDailyDigest({
+    reviewDate: "2026-06-26",
+    dailyTimeLabel: "8:00 AM CT",
+    reviews,
+  });
+}
+
+function embedCharacterCount(embed) {
+  return [
+    embed.title,
+    embed.description,
+    embed.footer?.text,
+    ...embed.fields.flatMap((field) => [field.name, field.value]),
+  ].reduce((total, value) => total + (value || "").length, 0);
+}
+
 describe("daily Discord maintenance digest", () => {
   it("includes the stethoscope title, date, maintenance description, footer, and timestamp", () => {
     const embed = digest([review()]);
@@ -107,5 +124,32 @@ describe("daily Discord maintenance digest", () => {
 
     expect(embed.fields[0].name.length).toBeLessThanOrEqual(256);
     expect(embed.fields[0].value.length).toBeLessThanOrEqual(1024);
+  });
+
+  it("splits more than 25 reviews across multiple embeds", () => {
+    const result = payload(Array.from({ length: 26 }, (_, index) => review({
+      displayName: `Site ${index + 1}`,
+    })));
+
+    expect(result.embeds).toHaveLength(2);
+    expect(result.embeds.map((embed) => embed.fields.length)).toEqual([25, 1]);
+    expect(result.embeds.every((embed) => embed.fields.length <= 25)).toBe(true);
+    expect(result.embeds[1].title).toContain("Part 2");
+  });
+
+  it("keeps verbose embeds below Discord total character limits", () => {
+    const result = payload(Array.from({ length: 25 }, (_, index) => review({
+      displayName: `Verbose Site ${index + 1}`,
+      status: STATUS.REVIEW,
+      findings: Array.from({ length: 4 }, (_, findingIndex) => ({
+        severity: "warn",
+        area: findingIndex === 0 ? "mobile" : "browser",
+        title: `Verbose finding ${findingIndex + 1}`,
+        detail: "This is a long maintenance detail with enough text to pressure Discord embed totals. ".repeat(12),
+        emoji: findingIndex === 0 ? "📱" : "🧪",
+      })),
+    })));
+
+    expect(result.embeds.every((embed) => embedCharacterCount(embed) < 6000)).toBe(true);
   });
 });

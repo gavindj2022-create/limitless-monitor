@@ -1,7 +1,9 @@
 ﻿import { STATUS, STATUS_EMOJI } from "./model.js";
 
 const FIELD_NAME_LIMIT = 256;
-const FIELD_VALUE_LIMIT = 1024;
+const FIELD_VALUE_LIMIT = 700;
+const EMBED_FIELD_LIMIT = 25;
+const EMBED_CHARACTER_BUDGET = 5200;
 
 const STATUS_COLOR = Object.freeze({
   [STATUS.HEALTHY]: 0x2ecc71,
@@ -25,19 +27,25 @@ export function buildDailyDigest({ reviewDate, dailyTimeLabel, reviews }) {
       reviewList[0].status,
     )
     : STATUS.SKIPPED;
+  const fields = reviewList.map(formatReviewField);
+  const fieldChunks = chunkFields(fields, reviewDate, dailyTimeLabel);
+  const timestamp = new Date().toISOString();
 
   return {
-    embeds: [
-      {
-        title: `🩺 Site Sentinel Daily Review · ${reviewDate}`,
-        description: `daily website maintenance check for the scheduled ${dailyTimeLabel} review.`,
-        color: STATUS_COLOR[worstStatus],
-        footer: { text: "Limitless · Site Sentinel" },
-        timestamp: new Date().toISOString(),
-        fields: reviewList.map(formatReviewField),
-      },
-    ],
+    embeds: fieldChunks.map((chunkFields, index) => ({
+      title: formatTitle(reviewDate, index, fieldChunks.length),
+      description: `daily website maintenance check for the scheduled ${dailyTimeLabel} review.`,
+      color: STATUS_COLOR[worstStatus],
+      footer: { text: "Limitless · Site Sentinel" },
+      timestamp,
+      fields: chunkFields,
+    })),
   };
+}
+
+function formatTitle(reviewDate, index, total) {
+  const title = `🩺 Site Sentinel Daily Review · ${reviewDate}`;
+  return total > 1 ? `${title} · Part ${index + 1}` : title;
 }
 
 function formatReviewField(review) {
@@ -87,4 +95,44 @@ function trim(value, limit) {
     return value;
   }
   return value.slice(0, limit - 1).trimEnd() + "…";
+}
+
+function chunkFields(fields, reviewDate, dailyTimeLabel) {
+  if (fields.length === 0) {
+    return [[]];
+  }
+
+  const chunks = [];
+  let current = [];
+  let currentCharacters = embedBaseCharacters(reviewDate, dailyTimeLabel);
+
+  for (const field of fields) {
+    const fieldCharacters = field.name.length + field.value.length;
+    const wouldExceedFieldLimit = current.length >= EMBED_FIELD_LIMIT;
+    const wouldExceedCharacterBudget = current.length > 0
+      && currentCharacters + fieldCharacters > EMBED_CHARACTER_BUDGET;
+
+    if (wouldExceedFieldLimit || wouldExceedCharacterBudget) {
+      chunks.push(current);
+      current = [];
+      currentCharacters = embedBaseCharacters(reviewDate, dailyTimeLabel);
+    }
+
+    current.push(field);
+    currentCharacters += fieldCharacters;
+  }
+
+  if (current.length > 0) {
+    chunks.push(current);
+  }
+
+  return chunks;
+}
+
+function embedBaseCharacters(reviewDate, dailyTimeLabel) {
+  return [
+    formatTitle(reviewDate, 98, 99),
+    `daily website maintenance check for the scheduled ${dailyTimeLabel} review.`,
+    "Limitless · Site Sentinel",
+  ].reduce((total, value) => total + value.length, 0);
 }
