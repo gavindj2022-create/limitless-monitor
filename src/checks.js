@@ -4,11 +4,13 @@ const DEFAULT_SLOW_MS = 2500;
 const BLANK_TEXT_LENGTH = 20;
 const LARGE_IMAGE_BYTES = 2_000_000;
 const MAX_IMAGE_PROBES = 20;
+const DEFAULT_IMAGE_PROBE_TIMEOUT_MS = 5000;
 
 export async function runCoreChecks(site, options = {}) {
   const fetcher = options.fetcher || fetch;
   const nowMs = options.nowMs || Date.now;
   const slowMs = options.slowMs || DEFAULT_SLOW_MS;
+  const imageProbeTimeoutMs = options.imageProbeTimeoutMs || DEFAULT_IMAGE_PROBE_TIMEOUT_MS;
   const findings = [];
   const metrics = {
     responseMs: 0,
@@ -108,7 +110,7 @@ export async function runCoreChecks(site, options = {}) {
 
   const images = parseImages(html, site.url);
   metrics.imageCount = images.length;
-  await probeImages(images, fetcher, findings);
+  await probeImages(images, fetcher, findings, imageProbeTimeoutMs);
   await probeFormEndpoint(site, fetcher, findings);
 
   return { findings, metrics, html };
@@ -196,7 +198,7 @@ function parseImages(html, baseUrl) {
   return images;
 }
 
-async function probeImages(images, fetcher, findings) {
+async function probeImages(images, fetcher, findings, timeoutMs) {
   const imagesToProbe = firstUniqueImages(images, MAX_IMAGE_PROBES);
   const reportedMissingAlt = new Set();
 
@@ -217,7 +219,7 @@ async function probeImages(images, fetcher, findings) {
   }
 
   for (const image of imagesToProbe) {
-    const response = await fetchImageWithFallback(image.url, fetcher);
+    const response = await fetchImageWithFallback(image.url, fetcher, timeoutMs);
     if (!response.ok) {
       findings.push(
         finding("warn", "images", "Image failed to load", `${image.url}: ${response.error || `HTTP ${response.status}`}`, "🖼️"),
@@ -225,11 +227,7 @@ async function probeImages(images, fetcher, findings) {
       continue;
     }
 
-    const contentLength = Number(
-      getHeader(response.response.headers, "content-length")
-        || getHeader(response.fallbackHeaders, "content-length")
-        || 0,
-    );
+    const contentLength = Number(getHeader(response.response.headers, "content-length") || 0);
     if (contentLength > LARGE_IMAGE_BYTES) {
       findings.push(
         finding(
@@ -244,11 +242,11 @@ async function probeImages(images, fetcher, findings) {
   }
 }
 
-async function fetchImageWithFallback(url, fetcher) {
+async function fetchImageWithFallback(url, fetcher, timeoutMs) {
   let headResponse;
 
   try {
-    headResponse = await fetcher(url, { method: "HEAD", redirect: "follow" });
+    headResponse = await fetchWithTimeout(fetcher, url, { method: "HEAD", redirect: "follow" }, timeoutMs);
     if (headResponse.ok) {
       return { ok: true, response: headResponse };
     }
@@ -257,9 +255,9 @@ async function fetchImageWithFallback(url, fetcher) {
   }
 
   try {
-    const getResponse = await fetcher(url, { method: "GET", redirect: "follow" });
+    const getResponse = await fetchWithTimeout(fetcher, url, { method: "GET", redirect: "follow" }, timeoutMs);
     if (getResponse.ok) {
-      return { ok: true, response: getResponse, fallbackHeaders: headResponse?.headers };
+      return { ok: true, response: getResponse };
     }
 
     return { ok: false, status: getResponse.status };
@@ -269,6 +267,37 @@ async function fetchImageWithFallback(url, fetcher) {
       status: headResponse?.status,
       error: error instanceof Error ? error.message : String(error),
     };
+  }
+}
+
+async function fetchWithTimeout(fetcher, url, options, timeoutMs) {
+  const controller = typeof AbortController === "function" ? new AbortController() : undefined;
+  let timeoutId;
+  let timedOut = false;
+
+  const timeout = new Promise((_, reject) => {
+    timeoutId = setTimeout(() => {
+      timedOut = true;
+      controller?.abort();
+      reject(new Error("Image probe timed out"));
+    }, timeoutMs);
+  });
+
+  try {
+    return await Promise.race([
+      fetcher(url, {
+        ...options,
+        ...(controller ? { signal: controller.signal } : {}),
+      }),
+      timeout,
+    ]);
+  } catch (error) {
+    if (timedOut) {
+      throw new Error("Image probe timed out");
+    }
+    throw error;
+  } finally {
+    clearTimeout(timeoutId);
   }
 }
 

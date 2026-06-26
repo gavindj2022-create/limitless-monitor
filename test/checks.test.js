@@ -422,7 +422,7 @@ describe("core website maintenance checks", () => {
     );
   });
 
-  it("flags large image assets", async () => {
+  it("does not flag large image assets from non-ok HEAD content-length", async () => {
     const fetcher = async (url, options = {}) => {
       if (url === "https://example.com") {
         return htmlResponse(`
@@ -458,11 +458,96 @@ describe("core website maintenance checks", () => {
       { fetcher, nowMs: nowSequence(0, 100) },
     );
 
-    expect(findings).toContainEqual(
+    expect(findings.map((item) => item.title)).not.toContain("Large image asset");
+  });
+
+  it("flags large image assets from ok HEAD and ok GET content-length", async () => {
+    const fetcher = async (url, options = {}) => {
+      if (url === "https://example.com") {
+        return htmlResponse(`
+          <html>
+            <head>
+              <title>Example Marketing Site</title>
+              <meta name="description" content="A useful description for search results.">
+              <link rel="canonical" href="https://example.com">
+              <meta property="og:image" content="https://example.com/social.png">
+            </head>
+            <body>
+              <p>This page has enough useful visible content for the check.</p>
+              <img src="/head-large.jpg" alt="Hero">
+              <img src="/get-large.jpg" alt="Gallery">
+            </body>
+          </html>
+        `);
+      }
+
+      if (url === "https://example.com/head-large.jpg") {
+        expect(options.method).toBe("HEAD");
+        return assetResponse({ headers: { "content-length": "2000001" } });
+      }
+
+      if (url === "https://example.com/get-large.jpg" && options.method === "HEAD") {
+        return assetResponse({ ok: false, status: 405 });
+      }
+
+      if (url === "https://example.com/get-large.jpg" && options.method === "GET") {
+        return assetResponse({ headers: { "content-length": "2000002" } });
+      }
+
+      throw new Error(`Unexpected URL ${url}`);
+    };
+
+    const { findings } = await runCoreChecks(
+      { url: "https://example.com" },
+      { fetcher, nowMs: nowSequence(0, 100) },
+    );
+
+    expect(findings.filter((item) => item.title === "Large image asset")).toHaveLength(2);
+  });
+
+  it("times out hanging image HEAD and GET probes", async () => {
+    const fetcher = async (url, options = {}) => {
+      if (url === "https://example.com") {
+        return htmlResponse(`
+          <html>
+            <head>
+              <title>Example Marketing Site</title>
+              <meta name="description" content="A useful description for search results.">
+              <link rel="canonical" href="https://example.com">
+              <meta property="og:image" content="https://example.com/social.png">
+            </head>
+            <body>
+              <p>This page has enough useful visible content for the check.</p>
+              <img src="/hang.jpg" alt="Hero">
+            </body>
+          </html>
+        `);
+      }
+
+      if (url === "https://example.com/hang.jpg") {
+        if (!options.signal) {
+          return new Promise(() => {});
+        }
+        return new Promise(() => {});
+      }
+
+      throw new Error(`Unexpected URL ${url}`);
+    };
+
+    const result = await Promise.race([
+      runCoreChecks(
+        { url: "https://example.com" },
+        { fetcher, nowMs: nowSequence(0, 100), imageProbeTimeoutMs: 1 },
+      ).then((value) => ({ type: "result", value })),
+      new Promise((resolve) => setTimeout(() => resolve({ type: "hung" }), 100)),
+    ]);
+
+    expect(result.type).toBe("result");
+    expect(result.value.findings).toContainEqual(
       expect.objectContaining({
         severity: "warn",
         area: "images",
-        title: "Large image asset",
+        title: "Image failed to load",
       }),
     );
   });
