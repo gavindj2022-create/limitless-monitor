@@ -1,4 +1,4 @@
-import { STATUS, STATUS_EMOJI } from "./model.js";
+﻿import { STATUS, STATUS_EMOJI } from "./model.js";
 
 const FIELD_NAME_LIMIT = 256;
 const FIELD_VALUE_LIMIT = 1024;

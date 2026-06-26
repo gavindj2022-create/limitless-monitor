@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+﻿import { describe, expect, it } from "vitest";
 import { STATUS } from "../src/model.js";
 import { buildDailyDigest } from "../src/report.js";
 
