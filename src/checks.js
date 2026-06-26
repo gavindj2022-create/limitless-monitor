@@ -5,12 +5,14 @@ const BLANK_TEXT_LENGTH = 20;
 const LARGE_IMAGE_BYTES = 2_000_000;
 const MAX_IMAGE_PROBES = 20;
 const DEFAULT_IMAGE_PROBE_TIMEOUT_MS = 5000;
+const DEFAULT_IMAGE_PROBE_CONCURRENCY = 4;
 
 export async function runCoreChecks(site, options = {}) {
   const fetcher = options.fetcher || fetch;
   const nowMs = options.nowMs || Date.now;
   const slowMs = options.slowMs || DEFAULT_SLOW_MS;
-  const imageProbeTimeoutMs = options.imageProbeTimeoutMs || DEFAULT_IMAGE_PROBE_TIMEOUT_MS;
+  const imageProbeTimeoutMs = options.imageProbeTimeoutMs ?? DEFAULT_IMAGE_PROBE_TIMEOUT_MS;
+  const imageProbeConcurrency = options.imageProbeConcurrency ?? DEFAULT_IMAGE_PROBE_CONCURRENCY;
   const findings = [];
   const metrics = {
     responseMs: 0,
@@ -110,7 +112,7 @@ export async function runCoreChecks(site, options = {}) {
 
   const images = parseImages(html, site.url);
   metrics.imageCount = images.length;
-  await probeImages(images, fetcher, findings, imageProbeTimeoutMs);
+  await probeImages(images, fetcher, findings, imageProbeTimeoutMs, imageProbeConcurrency);
   await probeFormEndpoint(site, fetcher, findings);
 
   return { findings, metrics, html };
@@ -198,7 +200,7 @@ function parseImages(html, baseUrl) {
   return images;
 }
 
-async function probeImages(images, fetcher, findings, timeoutMs) {
+async function probeImages(images, fetcher, findings, timeoutMs, concurrency) {
   const imagesToProbe = firstUniqueImages(images, MAX_IMAGE_PROBES);
   const reportedMissingAlt = new Set();
 
@@ -218,13 +220,13 @@ async function probeImages(images, fetcher, findings, timeoutMs) {
 
   }
 
-  for (const image of imagesToProbe) {
+  await mapWithConcurrency(imagesToProbe, concurrency, async (image) => {
     const response = await fetchImageWithFallback(image.url, fetcher, timeoutMs);
     if (!response.ok) {
       findings.push(
         finding("warn", "images", "Image failed to load", `${image.url}: ${response.error || `HTTP ${response.status}`}`, "🖼️"),
       );
-      continue;
+      return;
     }
 
     const contentLength = Number(getHeader(response.response.headers, "content-length") || 0);
@@ -239,7 +241,22 @@ async function probeImages(images, fetcher, findings, timeoutMs) {
         ),
       );
     }
+  });
+}
+
+async function mapWithConcurrency(items, limit, mapper) {
+  const concurrency = Math.max(1, Math.min(items.length, Math.floor(limit) || 1));
+  let nextIndex = 0;
+
+  async function worker() {
+    while (nextIndex < items.length) {
+      const index = nextIndex;
+      nextIndex += 1;
+      await mapper(items[index], index);
+    }
   }
+
+  await Promise.all(Array.from({ length: concurrency }, worker));
 }
 
 async function fetchImageWithFallback(url, fetcher, timeoutMs) {

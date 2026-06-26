@@ -309,13 +309,11 @@ describe("core website maintenance checks", () => {
     );
 
     expect(findings).toEqual([]);
-    expect(calls.map((call) => [call.url, call.method])).toEqual([
-      ["https://example.com", undefined],
-      ["https://example.com/head-throws.jpg", "HEAD"],
-      ["https://example.com/head-throws.jpg", "GET"],
-      ["https://example.com/head-404.jpg", "HEAD"],
-      ["https://example.com/head-404.jpg", "GET"],
-    ]);
+    expect(calls[0]).toEqual({ url: "https://example.com", method: undefined });
+    expect(calls.filter((call) => call.url === "https://example.com/head-throws.jpg").map((call) => call.method))
+      .toEqual(["HEAD", "GET"]);
+    expect(calls.filter((call) => call.url === "https://example.com/head-404.jpg").map((call) => call.method))
+      .toEqual(["HEAD", "GET"]);
   });
 
   it("deduplicates image probes and caps them at the first 20 unique image URLs", async () => {
@@ -550,6 +548,74 @@ describe("core website maintenance checks", () => {
         title: "Image failed to load",
       }),
     );
+  });
+
+  it("runs hanging image probes with bounded concurrency", async () => {
+    const imageTags = Array.from(
+      { length: 8 },
+      (_, index) => `<img src="/hang-${index + 1}.jpg" alt="Image ${index + 1}">`,
+    ).join("\n");
+    const imageCalls = [];
+    let activeImageRequests = 0;
+    let maxActiveImageRequests = 0;
+
+    const hangUntilAbort = (signal) => new Promise((resolve, reject) => {
+      const abort = () => {
+        activeImageRequests -= 1;
+        reject(new Error("aborted"));
+      };
+
+      activeImageRequests += 1;
+      maxActiveImageRequests = Math.max(maxActiveImageRequests, activeImageRequests);
+
+      if (signal?.aborted) {
+        abort();
+        return;
+      }
+
+      signal?.addEventListener("abort", abort, { once: true });
+    });
+
+    const fetcher = async (url, options = {}) => {
+      if (url === "https://example.com") {
+        return htmlResponse(`
+          <html>
+            <head>
+              <title>Example Marketing Site</title>
+              <meta name="description" content="A useful description for search results.">
+              <link rel="canonical" href="https://example.com">
+              <meta property="og:image" content="https://example.com/social.png">
+            </head>
+            <body>
+              <p>This page has enough useful visible content for the check.</p>
+              ${imageTags}
+            </body>
+          </html>
+        `);
+      }
+
+      if (url.startsWith("https://example.com/hang-")) {
+        imageCalls.push({ url: String(url), method: options.method });
+        return hangUntilAbort(options.signal);
+      }
+
+      throw new Error(`Unexpected URL ${url}`);
+    };
+
+    const { findings } = await runCoreChecks(
+      { url: "https://example.com" },
+      {
+        fetcher,
+        nowMs: nowSequence(0, 100),
+        imageProbeTimeoutMs: 1,
+        imageProbeConcurrency: 3,
+      },
+    );
+
+    expect(maxActiveImageRequests).toBe(3);
+    expect(imageCalls.filter((call) => call.method === "HEAD")).toHaveLength(8);
+    expect(imageCalls.filter((call) => call.method === "GET")).toHaveLength(8);
+    expect(findings.filter((item) => item.title === "Image failed to load")).toHaveLength(8);
   });
 
   it("returns Site did not load when fetching the site throws", async () => {
