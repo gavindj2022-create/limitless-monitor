@@ -1,6 +1,6 @@
 ﻿import { describe, expect, it } from "vitest";
 import { STATUS } from "../src/model.js";
-import { buildDailyDigest } from "../src/report.js";
+import { buildDailyDigest, buildDailyDigestPayloads } from "../src/report.js";
 
 function review(overrides = {}) {
   return {
@@ -34,6 +34,14 @@ function payload(reviews) {
   });
 }
 
+function payloads(reviews) {
+  return buildDailyDigestPayloads({
+    reviewDate: "2026-06-26",
+    dailyTimeLabel: "8:00 AM CT",
+    reviews,
+  });
+}
+
 function embedCharacterCount(embed) {
   return [
     embed.title,
@@ -41,6 +49,10 @@ function embedCharacterCount(embed) {
     embed.footer?.text,
     ...embed.fields.flatMap((field) => [field.name, field.value]),
   ].reduce((total, value) => total + (value || "").length, 0);
+}
+
+function payloadCharacterCount(payload) {
+  return payload.embeds.reduce((total, embed) => total + embedCharacterCount(embed), 0);
 }
 
 describe("daily Discord maintenance digest", () => {
@@ -126,15 +138,13 @@ describe("daily Discord maintenance digest", () => {
     expect(embed.fields[0].value.length).toBeLessThanOrEqual(1024);
   });
 
-  it("splits more than 25 reviews across multiple embeds", () => {
+  it("keeps buildDailyDigest compatible by returning one webhook payload object", () => {
     const result = payload(Array.from({ length: 26 }, (_, index) => review({
       displayName: `Site ${index + 1}`,
     })));
 
-    expect(result.embeds).toHaveLength(2);
-    expect(result.embeds.map((embed) => embed.fields.length)).toEqual([25, 1]);
+    expect(result).toEqual({ embeds: expect.any(Array) });
     expect(result.embeds.every((embed) => embed.fields.length <= 25)).toBe(true);
-    expect(result.embeds[1].title).toContain("Part 2");
   });
 
   it("keeps verbose embeds below Discord total character limits", () => {
@@ -151,5 +161,24 @@ describe("daily Discord maintenance digest", () => {
     })));
 
     expect(result.embeds.every((embed) => embedCharacterCount(embed) < 6000)).toBe(true);
+  });
+
+  it("builds multiple webhook payloads for verbose many-site digests", () => {
+    const result = payloads(Array.from({ length: 60 }, (_, index) => review({
+      displayName: `Verbose Site ${index + 1}`,
+      status: STATUS.REVIEW,
+      findings: Array.from({ length: 4 }, (_, findingIndex) => ({
+        severity: "warn",
+        area: findingIndex === 0 ? "mobile" : "browser",
+        title: `Verbose finding ${findingIndex + 1}`,
+        detail: "This is a long maintenance detail with enough text to pressure Discord message totals. ".repeat(12),
+        emoji: findingIndex === 0 ? "📱" : "🧪",
+      })),
+    })));
+
+    expect(result.length).toBeGreaterThan(1);
+    expect(result.every((item) => item.embeds.length <= 10)).toBe(true);
+    expect(result.every((item) => payloadCharacterCount(item) < 6000)).toBe(true);
+    expect(result.every((item) => item.embeds.every((embed) => embed.fields.length <= 25))).toBe(true);
   });
 });

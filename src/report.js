@@ -4,6 +4,8 @@ const FIELD_NAME_LIMIT = 256;
 const FIELD_VALUE_LIMIT = 700;
 const EMBED_FIELD_LIMIT = 25;
 const EMBED_CHARACTER_BUDGET = 5200;
+const PAYLOAD_CHARACTER_BUDGET = 5200;
+const PAYLOAD_EMBED_LIMIT = 10;
 
 const STATUS_COLOR = Object.freeze({
   [STATUS.HEALTHY]: 0x2ecc71,
@@ -20,6 +22,10 @@ const STATUS_RANK = Object.freeze({
 });
 
 export function buildDailyDigest({ reviewDate, dailyTimeLabel, reviews }) {
+  return buildDailyDigestPayloads({ reviewDate, dailyTimeLabel, reviews })[0];
+}
+
+export function buildDailyDigestPayloads({ reviewDate, dailyTimeLabel, reviews }) {
   const reviewList = reviews || [];
   const worstStatus = reviewList.length > 0
     ? reviewList.reduce(
@@ -30,17 +36,16 @@ export function buildDailyDigest({ reviewDate, dailyTimeLabel, reviews }) {
   const fields = reviewList.map(formatReviewField);
   const fieldChunks = chunkFields(fields, reviewDate, dailyTimeLabel);
   const timestamp = new Date().toISOString();
+  const embeds = fieldChunks.map((chunkFields, index) => ({
+    title: formatTitle(reviewDate, index, fieldChunks.length),
+    description: `daily website maintenance check for the scheduled ${dailyTimeLabel} review.`,
+    color: STATUS_COLOR[worstStatus],
+    footer: { text: "Limitless · Site Sentinel" },
+    timestamp,
+    fields: chunkFields,
+  }));
 
-  return {
-    embeds: fieldChunks.map((chunkFields, index) => ({
-      title: formatTitle(reviewDate, index, fieldChunks.length),
-      description: `daily website maintenance check for the scheduled ${dailyTimeLabel} review.`,
-      color: STATUS_COLOR[worstStatus],
-      footer: { text: "Limitless · Site Sentinel" },
-      timestamp,
-      fields: chunkFields,
-    })),
-  };
+  return chunkPayloads(embeds).map((payloadEmbeds) => ({ embeds: payloadEmbeds }));
 }
 
 function formatTitle(reviewDate, index, total) {
@@ -135,4 +140,41 @@ function embedBaseCharacters(reviewDate, dailyTimeLabel) {
     `daily website maintenance check for the scheduled ${dailyTimeLabel} review.`,
     "Limitless · Site Sentinel",
   ].reduce((total, value) => total + value.length, 0);
+}
+
+function chunkPayloads(embeds) {
+  const payloads = [];
+  let current = [];
+  let currentCharacters = 0;
+
+  for (const embed of embeds) {
+    const embedCharacters = embedCharacterCount(embed);
+    const wouldExceedEmbedLimit = current.length >= PAYLOAD_EMBED_LIMIT;
+    const wouldExceedCharacterBudget = current.length > 0
+      && currentCharacters + embedCharacters > PAYLOAD_CHARACTER_BUDGET;
+
+    if (wouldExceedEmbedLimit || wouldExceedCharacterBudget) {
+      payloads.push(current);
+      current = [];
+      currentCharacters = 0;
+    }
+
+    current.push(embed);
+    currentCharacters += embedCharacters;
+  }
+
+  if (current.length > 0) {
+    payloads.push(current);
+  }
+
+  return payloads;
+}
+
+function embedCharacterCount(embed) {
+  return [
+    embed.title,
+    embed.description,
+    embed.footer?.text,
+    ...embed.fields.flatMap((field) => [field.name, field.value]),
+  ].reduce((total, value) => total + (value || "").length, 0);
 }
