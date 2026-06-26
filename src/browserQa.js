@@ -4,6 +4,7 @@ const VIEWPORTS = [
   { key: "mobile", width: 390, height: 844, emoji: "📱" },
   { key: "desktop", width: 1440, height: 1000, emoji: "🖥️" },
 ];
+const MAX_FAILED_REQUEST_FINDINGS = 5;
 
 export async function runBrowserQa(site, options = {}) {
   if (!options.launchBrowser) {
@@ -70,6 +71,7 @@ async function inspectViewport(browser, site, viewport, options, findings, metri
     addViewportFindings(viewport, snapshot, consoleErrors, findings, metrics);
     metrics.failedRequests = (metrics.failedRequests || 0) + failedRequests.length;
     metrics.failedRequestUrls.push(...failedRequests);
+    addFailedRequestFindings(failedRequests, findings);
 
     if (options.captureScreenshots) {
       await page.screenshot({ fullPage: true });
@@ -77,6 +79,17 @@ async function inspectViewport(browser, site, viewport, options, findings, metri
     }
   } finally {
     await page.close();
+  }
+}
+
+function addFailedRequestFindings(failedRequests, findings) {
+  const existingFailedRequestFindings = findings
+    .filter((item) => item.area === "browser" && item.title === "Request failed")
+    .length;
+  const availableSlots = MAX_FAILED_REQUEST_FINDINGS - existingFailedRequestFindings;
+
+  for (const failedRequest of failedRequests.slice(0, Math.max(availableSlots, 0))) {
+    findings.push(finding("warn", "browser", "Request failed", failedRequest, "\u{1f9ea}"));
   }
 }
 

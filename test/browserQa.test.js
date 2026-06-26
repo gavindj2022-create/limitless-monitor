@@ -105,6 +105,13 @@ describe("browser QA checks", () => {
       expect.objectContaining({
         severity: "warn",
         area: "browser",
+        title: "Request failed",
+        detail: "https://example.com/mobile-asset.js",
+        emoji: "\u{1f9ea}",
+      }),
+      expect.objectContaining({
+        severity: "warn",
+        area: "browser",
         title: "Console error",
         emoji: "\u{1f9ea}",
       }),
@@ -146,6 +153,7 @@ describe("browser QA checks", () => {
     )).rejects.toThrow("navigation failed");
 
     expect(browser.closed).toBe(true);
+    expect(browser.pages[0].closed).toBe(true);
   });
 
   it("counts rendered images and failed rendered images in metrics", async () => {
